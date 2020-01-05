@@ -48,38 +48,11 @@ func main() {
 	m3u8.LaunchWorkers(w, stopChan)
 
 	// let's get all the videos for the replay page
-	if strings.HasSuffix(givenURL, "replay-videos/") {
-		res, err := http.Get(givenURL)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer res.Body.Close()
-		if res.StatusCode != 200 {
-			log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
-		}
-
-		// Load the HTML document
-		doc, err := goquery.NewDocumentFromReader(res.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
-		urls := []string{}
-		doc.Find("#videos > div > div.c-card-video__textarea.h-flex > h3 > a").Each(func(i int, s *goquery.Selection) {
-			href, _ := s.Attr("href")
-			videoPageURL := fmt.Sprintf("https://%s%s", u.Hostname(), href)
-			fmt.Println()
-			fmt.Println("Do you want to download", s.Text(), "? (Type y for Yes)")
-			reader := bufio.NewReader(os.Stdin)
-			inputText, _ := reader.ReadString('\n')
-			inputText = strings.TrimSpace(inputText)
-			if inputText == "y" || inputText == "Y" {
-				urls = append(urls, videoPageURL)
-			}
-		})
+	if strings.Contains(givenURL, "replay-videos") {
+		urls := collectionURLs(givenURL, nil)
 		for _, pageURL := range urls {
 			downloadVideo(pageURL)
 		}
-		return
 	} else {
 		downloadVideo(givenURL)
 	}
@@ -98,21 +71,13 @@ func downloadVideo(givenURL string) {
 		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
 	}
 
-	// Load the HTML document
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// search for the script document.querySelector("body > script")
-	// var scriptText string
 	scriptText := doc.Find("body > div.l-content > div.l-two-columns > div.l-column-left > script").Text()
-	// EachWithBreak(func(i int, s *goquery.Selection) bool {
-	// 	scriptText = s.Text()
-	// 	return false
-	// })
 	scriptText = strings.TrimSpace(scriptText)
-	// fmt.Println(scriptText)
 	if !strings.HasPrefix(scriptText, "var FTVPlayerVideos") {
 		log.Fatalf("Unexpected script content, expected to find var FTVPlayerVideos\nMake sure you picked an episode page.\nfound script:%s\n", scriptText)
 	}
@@ -157,6 +122,49 @@ func downloadVideo(givenURL string) {
 		DestPath: pathToUse,
 		Filename: filename}
 	m3u8.DlChan <- job
+}
+
+func collectionURLs(givenURL string, episodeURLs []string) []string {
+	res, err := http.Get(givenURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
+	}
+
+	// Load the HTML document
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if episodeURLs == nil {
+		episodeURLs = []string{}
+	}
+	count := 0
+
+	doc.Find("#videos > div > div > h3 > a").Each(func(i int, s *goquery.Selection) {
+		count++
+		href, _ := s.Attr("href")
+		videoPageURL := fmt.Sprintf("https://france.tv%s", href)
+		fmt.Println("Do you want to download", s.Text(), "? (Type y for Yes)")
+		reader := bufio.NewReader(os.Stdin)
+		inputText, _ := reader.ReadString('\n')
+		inputText = strings.TrimSpace(inputText)
+		if inputText == "y" || inputText == "Y" {
+			episodeURLs = append(episodeURLs, videoPageURL)
+		}
+	})
+
+	if count > 0 {
+		fmt.Println("Checking pagination")
+		if !strings.Contains(givenURL, "ajax/?page") {
+			return collectionURLs(givenURL+"ajax/?page=1", episodeURLs)
+		}
+	}
+
+	return episodeURLs
 }
 
 type VideoData struct {
