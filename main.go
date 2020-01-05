@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -46,6 +47,48 @@ func main() {
 	stopChan := make(chan bool)
 	m3u8.LaunchWorkers(w, stopChan)
 
+	// let's get all the videos for the replay page
+	if strings.HasSuffix(givenURL, "replay-videos/") {
+		res, err := http.Get(givenURL)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != 200 {
+			log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
+		}
+
+		// Load the HTML document
+		doc, err := goquery.NewDocumentFromReader(res.Body)
+		if err != nil {
+			log.Fatal(err)
+		}
+		urls := []string{}
+		doc.Find("#videos > div > div.c-card-video__textarea.h-flex > h3 > a").Each(func(i int, s *goquery.Selection) {
+			href, _ := s.Attr("href")
+			videoPageURL := fmt.Sprintf("https://%s%s", u.Hostname(), href)
+			fmt.Println()
+			fmt.Println("Do you want to download", s.Text(), "? (Type y for Yes)")
+			reader := bufio.NewReader(os.Stdin)
+			inputText, _ := reader.ReadString('\n')
+			inputText = strings.TrimSpace(inputText)
+			if inputText == "y" || inputText == "Y" {
+				urls = append(urls, videoPageURL)
+			}
+		})
+		for _, pageURL := range urls {
+			downloadVideo(pageURL)
+		}
+		return
+	} else {
+		downloadVideo(givenURL)
+	}
+
+	close(m3u8.DlChan)
+	w.Wait()
+}
+
+func downloadVideo(givenURL string) {
 	res, err := http.Get(givenURL)
 	if err != nil {
 		log.Fatal(err)
@@ -114,8 +157,6 @@ func main() {
 		DestPath: pathToUse,
 		Filename: filename}
 	m3u8.DlChan <- job
-	close(m3u8.DlChan)
-	w.Wait()
 }
 
 type VideoData struct {
