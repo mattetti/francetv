@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 
 var (
 	debugFlag = flag.Bool("debug", false, "Set debug mode")
+	dlAllFlag = flag.Bool("all", false, "Download all episodes if the page contains multiple videos.")
 )
 
 func main() {
@@ -41,6 +43,11 @@ func main() {
 	}
 	if *debugFlag {
 		fmt.Println("Checking", u)
+	}
+	if len(os.Args) > 2 {
+		if os.Args[2] == "-all" {
+			*dlAllFlag = true
+		}
 	}
 	// start the workers
 	w := &sync.WaitGroup{}
@@ -68,7 +75,8 @@ func downloadVideo(givenURL string) {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
+		log.Printf("Can't download %s\nStatus code error: %d %s", givenURL, res.StatusCode, res.Status)
+		return
 	}
 
 	doc, err := goquery.NewDocumentFromReader(res.Body)
@@ -93,14 +101,15 @@ func downloadVideo(givenURL string) {
 		fmt.Printf("Video Id: %#v\n", data[0].VideoID)
 	}
 
-	apiURL := fmt.Sprintf("https://player.webservices.francetelevisions.fr/v1/videos/%s?country_code=FR&w=720&h=405&version=5.29.3&domain=www.france.tv&device_type=desktop&browser=chrome&browser_version=78&os=macos&os_version=10_14_6&diffusion_mode=tunnel_first&gmt=%2B1", data[0].VideoID)
+	apiURL := fmt.Sprintf("https://player.webservices.francetelevisions.fr/v1/videos/%s?country_code=FR&w=720&h=405&version=5.29.3&domain=www.france.tv&evice_type=desktop&browser=safari&browser_version=78&os=macos&os_version=10_14_6&diffusion_mode=tunnel_first", data[0].VideoID)
 
 	res2, err := http.Get(apiURL)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if res2.StatusCode != 200 {
-		log.Fatalf("status code error: %d %s", res2.StatusCode, res2.Status)
+		log.Printf("Stream for %s not available: %d %s", givenURL, res2.StatusCode, res2.Status)
+		return
 	}
 	var stream StreamData
 	err = json.NewDecoder(res2.Body).Decode(&stream)
@@ -115,13 +124,45 @@ func downloadVideo(givenURL string) {
 		log.Fatal(err)
 	}
 
-	job := &m3u8.WJob{
-		Type: m3u8.ListDL,
-		URL:  stream.Video.URL,
-		// SkipConverter: true,
-		DestPath: pathToUse,
-		Filename: filename}
-	m3u8.DlChan <- job
+	var manifestURL string
+	if stream.Video.Token == "" {
+		manifestURL = stream.Video.URL
+	} else {
+		tokenURL := strings.Replace(stream.Video.Token, "format=json", "format=text", 1)
+		res3, err := http.Get(tokenURL)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer res3.Body.Close()
+		if res3.StatusCode != 200 {
+			log.Printf("Stream for %s not available: %d %s", givenURL, res3.StatusCode, res3.Status)
+			return
+		}
+
+		b, err := ioutil.ReadAll(res3.Body)
+		if err != nil {
+			panic(err)
+		}
+		manifestURL = string(b)
+	}
+
+	if stream.Video.Format == "hls" {
+		job := &m3u8.WJob{
+			Type: m3u8.ListDL,
+			URL:  manifestURL,
+			// SkipConverter: true,
+			DestPath: pathToUse,
+			Filename: filename}
+		m3u8.DlChan <- job
+		return
+	}
+
+	// if stream.Video.Format == "dash" {
+	// https://godoc.org/github.com/zencoder/go-dash/mpd
+	// 	stream.Video.Token
+	// }
+	fmt.Printf("%s is in an unsupported format: %s\n", filename, stream.Video.Format)
+	fmt.Printf("Data: %s\n", apiURL)
 }
 
 func collectionURLs(givenURL string, episodeURLs []string) []string {
@@ -149,17 +190,21 @@ func collectionURLs(givenURL string, episodeURLs []string) []string {
 		href, _ := s.Attr("href")
 		videoPageURL := fmt.Sprintf("https://france.tv%s", href)
 		fmt.Println("Do you want to download", s.Text(), "? (Type y for Yes)")
-		reader := bufio.NewReader(os.Stdin)
-		inputText, _ := reader.ReadString('\n')
-		inputText = strings.TrimSpace(inputText)
-		if inputText == "y" || inputText == "Y" {
+		if *dlAllFlag {
 			episodeURLs = append(episodeURLs, videoPageURL)
+		} else {
+			reader := bufio.NewReader(os.Stdin)
+			inputText, _ := reader.ReadString('\n')
+			inputText = strings.TrimSpace(inputText)
+			if inputText == "y" || inputText == "Y" {
+				episodeURLs = append(episodeURLs, videoPageURL)
+			}
 		}
 	})
 
 	if count > 0 {
-		fmt.Println("Checking pagination")
 		if !strings.Contains(givenURL, "ajax/?page") {
+			fmt.Println("Checking pagination")
 			return collectionURLs(givenURL+"ajax/?page=1", episodeURLs)
 		}
 	}
