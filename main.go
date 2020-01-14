@@ -101,14 +101,22 @@ func downloadVideo(givenURL string) {
 		fmt.Printf("Video Id: %#v\n", data[0].VideoID)
 	}
 
-	apiURL := fmt.Sprintf("https://player.webservices.francetelevisions.fr/v1/videos/%s?country_code=FR&w=720&h=405&version=5.29.3&domain=www.france.tv&evice_type=desktop&browser=safari&browser_version=78&os=macos&os_version=10_14_6&diffusion_mode=tunnel_first", data[0].VideoID)
+	apiURL := fmt.Sprintf("https://player.webservices.francetelevisions.fr/v1/videos/%s?country_code=FR&w=720&h=405&version=5.29.4&domain=www.france.tv&device_type=desktop&browser=safari&browser_version=13&os=macos&os_version=10_14_6&diffusion_mode=tunnel_first&gmt=%2B1", data[0].VideoID)
 
-	res2, err := http.Get(apiURL)
+	req, _ := http.NewRequest("GET", apiURL, nil)
+	req.Header.Set("Origin", "https://www.france.tv")
+	req.Header.Set("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.1 Safari/605.1.15")
+	req.Header.Set("Host", "player.webservices.francetelevisions.fr")
+	req.Header.Set("Referer", "https://www.france.tv/")
+	res2, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if res2.StatusCode != 200 {
-		log.Printf("Stream for %s not available: %d %s", givenURL, res2.StatusCode, res2.Status)
+		log.Printf("Stream for %s not available\n", givenURL)
+		log.Printf("Tried to used API call %s: %d %s\n", apiURL, res2.StatusCode, res2.Status)
+		body, _ := ioutil.ReadAll(res2.Body)
+		log.Printf("Response body: %s\n", body)
 		return
 	}
 	var stream StreamData
