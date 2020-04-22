@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"path/filepath"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -132,6 +134,13 @@ func downloadVideo(givenURL string) {
 		log.Fatal(err)
 	}
 
+	destPath := filepath.Join(pathToUse, filename+".mp4")
+	if fileAlreadyExists(destPath){
+		fmt.Printf("%s already exists\n", destPath)
+		return
+	}
+	fmt.Printf("Preparing to download to %s\n", destPath)
+
 	var manifestURL string
 	if stream.Video.Token == "" {
 		manifestURL = stream.Video.URL
@@ -153,6 +162,8 @@ func downloadVideo(givenURL string) {
 		}
 		manifestURL = string(b)
 	}
+
+	log.Printf("Master m3u8: %s\n", manifestURL)
 
 	if stream.Video.Format == "hls" {
 		job := &m3u8.WJob{
@@ -214,10 +225,26 @@ func collectionURLs(givenURL string, episodeURLs []string) []string {
 		if !strings.Contains(givenURL, "ajax/?page") {
 			fmt.Println("Checking pagination")
 			return collectionURLs(givenURL+"ajax/?page=1", episodeURLs)
+		} else {
+			idx := strings.LastIndex(givenURL,"page=")
+			if idx > 0 {
+				currentPage, err := strconv.Atoi(givenURL[idx+5:])
+				if err != nil {
+					fmt.Printf("Couldn't get the next page - %v", err)
+					return episodeURLs
+				}
+				nextURL := givenURL[:idx+5]+strconv.Itoa(currentPage+1)
+				return collectionURLs(nextURL, episodeURLs)
+			}
 		}
 	}
 
 	return episodeURLs
+}
+
+func fileAlreadyExists(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
 }
 
 type VideoData struct {
