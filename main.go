@@ -88,8 +88,8 @@ func downloadVideo(givenURL string) {
 
 	scriptText := doc.Find("body > div.l-content > div.l-two-columns > div.l-column-left > script").Text()
 	scriptText = strings.TrimSpace(scriptText)
-	if !strings.HasPrefix(scriptText, "var FTVPlayerVideos") {
-		log.Fatalf("Unexpected script content, expected to find var FTVPlayerVideos\nMake sure you picked an episode page.\nfound script:%s\n", scriptText)
+	if !strings.HasPrefix(scriptText, "var FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos"){
+		log.Fatalf("Unexpected script content, expected to find let FTVPlayerVideos\nMake sure you picked an episode page.\nfound script:%s\n", scriptText)
 	}
 	startIDX := strings.Index(scriptText, "[")
 	endIDX := strings.LastIndex(scriptText, ";")
@@ -127,7 +127,12 @@ func downloadVideo(givenURL string) {
 		log.Fatalf("Failed to parse response data\nerr: %v", err)
 	}
 	res2.Body.Close()
-	filename := fmt.Sprintf("%s - %s - %s", stream.Meta.Title, strings.ReplaceAll(stream.Meta.PreTitle, " ", ""), stream.Meta.AdditionalTitle)
+	preTitle := stream.Meta.PreTitle
+	if preTitle == "" {
+		preTitle = data[0].VideoTitle
+	}
+	preTitle = strings.ReplaceAll(preTitle, " ", "")
+	filename := fmt.Sprintf("%s - %s - %s", stream.Meta.Title, preTitle, stream.Meta.AdditionalTitle)
 
 	pathToUse, err := os.Getwd()
 	if err != nil {
