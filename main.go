@@ -93,10 +93,28 @@ func downloadVideo(givenURL string) {
 	}
 	startIDX := strings.Index(scriptText, "[")
 	endIDX := strings.LastIndex(scriptText, ";")
+	if (startIDX < 0 || endIDX <= startIDX) {
+		log.Printf("Didn't find the expected json data in %s - %v\n", givenURL, scriptText)
+		log.Println("Would you like to contine [y,n]")
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			input, _ := reader.ReadString('\n')
+			input = strings.Replace(input, "\n", "", -1)
+			if strings.ToLower(input) == "n" {
+				log.Fatal("Bad data found when trying to retrieve the stream")
+			}
+			if strings.ToLower(input) == "y" {
+				log.Printf("Ignoring this error on continuing")
+				return
+			}
+		}
+	}
+	log.Printf("Parsing the json data")
 	jsonString := scriptText[startIDX:endIDX]
 	var data []VideoData
 	if err := json.Unmarshal([]byte(jsonString), &data); err != nil {
 		log.Fatalf("Failed to parse json data:\n%s\nerr: %v", jsonString, err)
+
 	}
 	if *debugFlag {
 		fmt.Println("Video Title:", data[0].VideoTitle)
