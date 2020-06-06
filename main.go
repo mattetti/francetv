@@ -58,7 +58,9 @@ func main() {
 
 	// let's get all the videos for the replay page
 	if strings.Contains(givenURL, "replay-videos") {
+		log.Println("Trying to find all videos")
 		urls := collectionURLs(givenURL, nil)
+		log.Printf("%d videos found in %s\n", len(urls), givenURL)
 		for _, pageURL := range urls {
 			downloadVideo(pageURL)
 		}
@@ -227,11 +229,12 @@ func collectionURLs(givenURL string, episodeURLs []string) []string {
 	}
 	count := 0
 
-	doc.Find("#videos > div > div > h3 > a").Each(func(i int, s *goquery.Selection) {
+	doc.Find("#videos > div > div > a").Each(func(i int, s *goquery.Selection) {
 		count++
 		href, _ := s.Attr("href")
 		videoPageURL := fmt.Sprintf("https://france.tv%s", href)
-		fmt.Println("Do you want to download", s.Text(), "? (Type y for Yes)")
+		title := s.Parent().Find(".c-card-video__description").First().Text()
+		fmt.Println("Do you want to download", title, "? (Type y for Yes)")
 		if *dlAllFlag {
 			episodeURLs = append(episodeURLs, videoPageURL)
 		} else {
@@ -243,6 +246,10 @@ func collectionURLs(givenURL string, episodeURLs []string) []string {
 			}
 		}
 	})
+
+	if count == 0 && len(episodeURLs) == 0 {
+		log.Println("No videos found on this page")
+	}
 
 	if count > 0 {
 		if !strings.Contains(givenURL, "ajax/?page") {
