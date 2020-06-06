@@ -97,6 +97,9 @@ func downloadVideo(givenURL string) {
 	endIDX := strings.LastIndex(scriptText, ";")
 	if (startIDX < 0 || endIDX <= startIDX) {
 		log.Printf("Didn't find the expected json data in %s - %v\n", givenURL, scriptText)
+		if *dlAllFlag {
+			return
+		}
 		log.Println("Would you like to contine [y,n]")
 		reader := bufio.NewReader(os.Stdin)
 		for {
