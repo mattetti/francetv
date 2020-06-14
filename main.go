@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"path/filepath"
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,7 +57,7 @@ func main() {
 	m3u8.LaunchWorkers(w, stopChan)
 
 	// let's get all the videos for the replay page
-	if strings.Contains(givenURL, "replay-videos") {
+	if strings.Contains(givenURL, "replay-videos") || strings.Contains(givenURL, "toutes-les-videos") {
 		log.Println("Trying to find all videos")
 		urls := collectionURLs(givenURL, nil)
 		log.Printf("%d videos found in %s\n", len(urls), givenURL)
@@ -90,12 +90,12 @@ func downloadVideo(givenURL string) {
 
 	scriptText := doc.Find("body > div.l-content > div.l-two-columns > div.l-column-left > script").Text()
 	scriptText = strings.TrimSpace(scriptText)
-	if !strings.HasPrefix(scriptText, "var FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos"){
+	if !strings.HasPrefix(scriptText, "var FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos") {
 		log.Fatalf("Unexpected script content, expected to find let FTVPlayerVideos\nMake sure you picked an episode page.\nfound script:%s\n", scriptText)
 	}
 	startIDX := strings.Index(scriptText, "[")
 	endIDX := strings.LastIndex(scriptText, ";")
-	if (startIDX < 0 || endIDX <= startIDX) {
+	if startIDX < 0 || endIDX <= startIDX {
 		log.Printf("Didn't find the expected json data in %s - %v\n", givenURL, scriptText)
 		if *dlAllFlag {
 			return
@@ -163,7 +163,7 @@ func downloadVideo(givenURL string) {
 	}
 
 	destPath := filepath.Join(pathToUse, filename+".mp4")
-	if fileAlreadyExists(destPath){
+	if fileAlreadyExists(destPath) {
 		fmt.Printf("%s already exists\n", destPath)
 		return
 	}
@@ -255,18 +255,18 @@ func collectionURLs(givenURL string, episodeURLs []string) []string {
 	}
 
 	if count > 0 {
-		if !strings.Contains(givenURL, "ajax/?page") {
+		if !strings.Contains(givenURL, "?page") {
 			fmt.Println("Checking pagination")
-			return collectionURLs(givenURL+"ajax/?page=1", episodeURLs)
+			return collectionURLs(givenURL+"/?page=1", episodeURLs)
 		} else {
-			idx := strings.LastIndex(givenURL,"page=")
+			idx := strings.LastIndex(givenURL, "page=")
 			if idx > 0 {
 				currentPage, err := strconv.Atoi(givenURL[idx+5:])
 				if err != nil {
 					fmt.Printf("Couldn't get the next page - %v", err)
 					return episodeURLs
 				}
-				nextURL := givenURL[:idx+5]+strconv.Itoa(currentPage+1)
+				nextURL := givenURL[:idx+5] + strconv.Itoa(currentPage+1)
 				return collectionURLs(nextURL, episodeURLs)
 			}
 		}
