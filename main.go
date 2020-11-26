@@ -90,7 +90,7 @@ func downloadVideo(givenURL string) {
 
 	scriptText := doc.Find("body > div.l-content > div.l-two-columns > div.l-column-left > script").Text()
 	scriptText = strings.TrimSpace(scriptText)
-	if !strings.HasPrefix(scriptText, "var FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos") {
+	if !strings.HasPrefix(scriptText, "window.FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos") {
 		log.Fatalf("Unexpected script content, expected to find let FTVPlayerVideos\nMake sure you picked an episode page.\nfound script:%s\n", scriptText)
 	}
 	startIDX := strings.Index(scriptText, "[")
