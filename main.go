@@ -232,7 +232,7 @@ func collectionURLs(givenURL string, episodeURLs []string) []string {
 	}
 	count := 0
 
-	doc.Find("#videos > div > div > a").Each(func(i int, s *goquery.Selection) {
+	doc.Find("#videos > a").Each(func(i int, s *goquery.Selection) {
 		count++
 		href, _ := s.Attr("href")
 		videoPageURL := fmt.Sprintf("https://france.tv%s", href)
@@ -304,7 +304,7 @@ type VideoData struct {
 	IsAdVisible  interface{} `json:"isAdVisible"`
 	VideoTitle   string      `json:"videoTitle"`
 	ProgramName  string      `json:"programName"`
-	SeasonNumber string      `json:"seasonNumber"`
+	SeasonNumber int         `json:"seasonNumber"`
 }
 
 type StreamData struct {
