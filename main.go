@@ -88,10 +88,10 @@ func downloadVideo(givenURL string) {
 		log.Fatal(err)
 	}
 
-	scriptText := doc.Find("body > div.l-content > div.l-two-columns > div.l-column-left > script").Text()
+	scriptText := doc.Find("div.l-two-columns > div.l-column-left > script").Text()
 	scriptText = strings.TrimSpace(scriptText)
 	if !strings.HasPrefix(scriptText, "window.FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos") {
-		log.Fatalf("Unexpected script content, expected to find let FTVPlayerVideos\nMake sure you picked an episode page.\nfound script:%s\n", scriptText)
+		log.Fatalf("Unexpected script content, expected to find FTVPlayerVideos\nMake sure you picked an episode page.\nfound script:%s\n", scriptText)
 	}
 	startIDX := strings.Index(scriptText, "[")
 	endIDX := strings.LastIndex(scriptText, ";")
@@ -232,11 +232,11 @@ func collectionURLs(givenURL string, episodeURLs []string) []string {
 	}
 	count := 0
 
-	doc.Find("#videos > a").Each(func(i int, s *goquery.Selection) {
+	doc.Find("a.c-card-video").Each(func(i int, s *goquery.Selection) {
 		count++
 		href, _ := s.Attr("href")
 		videoPageURL := fmt.Sprintf("https://france.tv%s", href)
-		title := s.Parent().Find(".c-card-video__description").First().Text()
+		title := s.Find(".c-card-video__textarea-subtitle").First().Text()
 		fmt.Println("Do you want to download", title, "? (Type y for Yes)")
 		if *dlAllFlag {
 			episodeURLs = append(episodeURLs, videoPageURL)
