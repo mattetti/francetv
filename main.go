@@ -88,11 +88,19 @@ func downloadVideo(givenURL string) {
 		log.Fatal(err)
 	}
 
-	// document.querySelector("#main > div > div.l-column-left > script")
 	scriptText := doc.Find("div > div.l-column-left > script").Text()
 	scriptText = strings.TrimSpace(scriptText)
 	if !strings.HasPrefix(scriptText, "window.FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos") {
-		log.Fatalf("Unexpected script content, expected to find FTVPlayerVideos\nMake sure you picked an episode page.\nfound script:%s\n", scriptText)
+		// not a player page
+		urls := collectionURLs(givenURL, nil)
+		if len(urls) > 0 {
+			log.Printf("%d videos found in %s\n", len(urls), givenURL)
+			for _, pageURL := range urls {
+				downloadVideo(pageURL)
+			}
+		} else {
+			log.Fatalf("Unexpected script content, expected to find FTVPlayerVideos or a video player\nMake sure you picked an episode page.\nfound script:%s\n", scriptText)
+		}
 	}
 	startIDX := strings.Index(scriptText, "[")
 	endIDX := strings.LastIndex(scriptText, ";")
@@ -233,11 +241,11 @@ func collectionURLs(givenURL string, episodeURLs []string) []string {
 	}
 	count := 0
 
-	doc.Find("a.c-card-video").Each(func(i int, s *goquery.Selection) {
+	doc.Find("a.c-card-16x9").Each(func(i int, s *goquery.Selection) {
 		count++
 		href, _ := s.Attr("href")
 		videoPageURL := fmt.Sprintf("https://france.tv%s", href)
-		title := s.Find(".c-card-video__textarea-subtitle").First().Text()
+		title := s.Find(".c-card-16x9__subtitle").First().Text()
 		fmt.Println("Do you want to download", title, "? (Type y for Yes)")
 		if *dlAllFlag {
 			episodeURLs = append(episodeURLs, videoPageURL)
