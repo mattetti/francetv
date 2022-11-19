@@ -88,7 +88,8 @@ func downloadVideo(givenURL string) {
 		log.Fatal(err)
 	}
 
-	scriptText := doc.Find("div.l-two-columns > div.l-column-left > script").Text()
+	// document.querySelector("#main > div > div.l-column-left > script")
+	scriptText := doc.Find("div > div.l-column-left > script").Text()
 	scriptText = strings.TrimSpace(scriptText)
 	if !strings.HasPrefix(scriptText, "window.FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos") {
 		log.Fatalf("Unexpected script content, expected to find FTVPlayerVideos\nMake sure you picked an episode page.\nfound script:%s\n", scriptText)
