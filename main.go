@@ -23,6 +23,8 @@ import (
 var (
 	debugFlag = flag.Bool("debug", false, "Set debug mode")
 	dlAllFlag = flag.Bool("all", false, "Download all episodes if the page contains multiple videos.")
+	subsOnly  = flag.Bool("subsOnly", false, "Only download the subtitles.")
+	URLFlag   = flag.String("url", "", "URL of the page to backup.")
 )
 
 func main() {
@@ -36,7 +38,11 @@ func main() {
 		m3u8.Debug = true
 	}
 
-	givenURL := os.Args[1]
+	if *subsOnly {
+		fmt.Println("Downloading subtitles only")
+	}
+
+	givenURL := *URLFlag
 	u, err := url.Parse(givenURL)
 	if err != nil {
 		fmt.Println("Something went wrong when trying to parse", givenURL)
@@ -204,8 +210,9 @@ func downloadVideo(givenURL string) {
 
 	if stream.Video.Format == "hls" {
 		job := &m3u8.WJob{
-			Type: m3u8.ListDL,
-			URL:  manifestURL,
+			Type:     m3u8.ListDL,
+			URL:      manifestURL,
+			SubsOnly: *subsOnly,
 			// SkipConverter: true,
 			DestPath: pathToUse,
 			Filename: filename}
