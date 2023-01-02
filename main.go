@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,6 +30,10 @@ var (
 	URLFlag   = flag.String("url", "", "URL of the page to backup.")
 	hlsFlag   = flag.Bool("m3u8", true, "Should use HLS/m3u8 format to download (instead of dash)")
 )
+
+var ErrNoPlayerData = errors.New("no playerData found")
+var ErrMissingPayerJSONData = errors.New("no JSON data found")
+var ErrBadPlayerJSONData = errors.New("Bad JSON data found")
 
 func main() {
 	flag.Parse()
@@ -96,89 +101,35 @@ func main() {
 func downloadDashVideo(givenURL string) {
 
 	// 0. Parse the page to find the product/video IDs
-	res, err := http.Get(givenURL)
+	data, err := extractVideoDataFromPage(givenURL)
 	if err != nil {
-		log.Fatal(err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		log.Printf("Can't download %s\nStatus code error: %d %s", givenURL, res.StatusCode, res.Status)
-		return
-	}
+		// check if we have a collection page instead of a single item page
+		if urls := collectionURLs(givenURL, nil); len(urls) > 0 {
+			for _, pageURL := range urls {
+				downloadDashVideo(pageURL)
+			}
+		}
 
-	doc, err := goquery.NewDocumentFromReader(res.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	scriptText := doc.Find("div > div.l-column-left > script").Text()
-	scriptText = strings.TrimSpace(scriptText)
-	if !strings.HasPrefix(scriptText, "window.FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos") {
-		log.Println("Could not find the video data in the page")
+		fmt.Println(err)
 		os.Exit(1)
-		return
 	}
 
-	startIDX := strings.Index(scriptText, "[")
-	endIDX := strings.LastIndex(scriptText, ";")
-	if startIDX < 0 || endIDX <= startIDX {
-		log.Println("Could not find the expected JSON video data in the page")
+	if data == nil {
+		fmt.Println("No video data found in the page and an unexpected lack of error being reported")
 		os.Exit(1)
-		return
-	}
-
-	log.Printf("Parsing the json data")
-	jsonString := scriptText[startIDX:endIDX]
-	var data []VideoData
-	if err := json.Unmarshal([]byte(jsonString), &data); err != nil {
-		log.Fatalf("Failed to parse json data:\n%s\nerr: %v", jsonString, err)
-
 	}
 	// fmt.Printf("data: %#v\n", data)
-	productID := data[0].ContentID
-	videoID := data[0].VideoID
-	// fmt.Println("Video Title:", data[0].VideoTitle)
-	// fmt.Printf("Video Id: %#v\n", data[0].VideoID)
+	productID := data.ContentID
+	videoID := data.VideoID
+	originURL := data.OriginURL.(string)
 
 	// 1. Call the API to get the manifest using the video and product IDs we just recovered
-
-	reqURL := fmt.Sprintf("https://k7.ftven.fr/videos/%s?country_code=FR&w=955&h=537&screen_w=1680&screen_h=1050&player_version=5.71.7&domain=www.france.tv&device_type=desktop&browser=chrome&browser_version=108&os=macos&os_version=10_15_7&diffusion_mode=tunnel_first&gmt=0100&video_product_id=%d", videoID, productID)
-
-	req, err := http.NewRequest("GET", reqURL, nil)
+	stream, err := fetchStreamInfo(videoID, productID, originURL)
 	if err != nil {
-		fmt.Printf("Could not create request for %s, err: %v", reqURL, err)
+		fmt.Println("Failed to retrieve the stream info using the FTV API")
+		fmt.Println(err)
 		os.Exit(1)
 	}
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9,fr-FR;q=0.8,fr;q=0.7,es-US;q=0.6,es;q=0.5")
-	req.Header.Set("Dnt", "1")
-	req.Header.Set("Origin", "https://www.france.tv")
-	req.Header.Set("Referer", fmt.Sprintf("https://www.france.tv%s", data[0].OriginURL))
-	req.Header.Set("Sec-Fetch-Dest", "empty")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Sec-Fetch-Site", "cross-site")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36")
-	req.Header.Set("Sec-Ch-Ua", "Chromium\";v=\"108\", \"Google Chrome\";v=\"108\"")
-	req.Header.Set("Sec-Ch-Ua-Platform", "\"macOS\"")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Printf("Could not send request to %s, err: %v", reqURL, err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		log.Printf("Can't download %s", reqURL)
-		os.Exit(1)
-	}
-
-	var stream StreamData
-	err = json.NewDecoder(resp.Body).Decode(&stream)
-	if err != nil {
-		log.Fatalf("Failed to parse response data\nerr: %v", err)
-	}
-	resp.Body.Close()
 
 	// 2. Using the stream data, prepare the request to get the mpd temp, signed URL
 
@@ -186,7 +137,7 @@ func downloadDashVideo(givenURL string) {
 
 	preTitle := stream.Meta.PreTitle
 	if preTitle == "" {
-		preTitle = data[0].VideoTitle
+		preTitle = data.VideoTitle
 	}
 	preTitle = strings.ReplaceAll(preTitle, " ", "")
 	filename := fmt.Sprintf("%s - %s - %s", stream.Meta.Title, preTitle, stream.Meta.AdditionalTitle)
@@ -196,49 +147,17 @@ func downloadDashVideo(givenURL string) {
 		log.Fatal(err)
 	}
 
-	destPath := filepath.Join(pathToUse, filename+".mp4")
-	if fileAlreadyExists(destPath) {
-		fmt.Printf("%s already exists\n", destPath)
-		return
-	}
-	fmt.Printf("Preparing to download to %s\n", destPath)
-
-	var manifestURL string
-	if stream.Video.Token == "" {
-		fmt.Println("video token not set")
-		manifestURL = stream.Video.URL
-	} else {
-		tokenURL := fmt.Sprintf("%s&url=%s", stream.Video.Token, stream.Video.URL)
-		tokenURL = strings.Replace(tokenURL, "format=json", "format=text", 1)
-		res3, err := http.Get(tokenURL)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer res3.Body.Close()
-		if res3.StatusCode != 200 {
-			log.Printf("Stream for %s not available: %d %s", tokenURL, res3.StatusCode, res3.Status)
-			return
-		}
-
-		b, err := ioutil.ReadAll(res3.Body)
-		if err != nil {
-			panic(err)
-		}
-		manifestURL = string(b)
-	}
-
+	// 3. Download the mpd file
 	manifestPath := filepath.Join(pathToUse, filename+".mpd")
-
-	// we now have the mpd URL
-	fmt.Println("MPD manifest URL", manifestURL)
-	f, err := downloadFile(manifestURL, manifestPath)
+	mpdf, err := downloadMPDFile(stream, manifestPath)
 	if err != nil {
-		fmt.Printf("Failed to download the manifest url: %s - %s\n", manifestURL, err)
+		fmt.Println("Failed to download the mpd file")
+		fmt.Println(err)
 		os.Exit(1)
 	}
-	defer f.Close()
-	f.Seek(0, io.SeekStart)
-	mpdData, err := mpd.Read(f)
+	defer mpdf.Close()
+
+	mpdData, err := mpd.Read(mpdf)
 	if err != nil {
 		fmt.Printf("Failed to read the mpd file - %s\n", err)
 		os.Exit(1)
@@ -277,6 +196,13 @@ func downloadDashVideo(givenURL string) {
 		}
 	}
 
+	destPath := filepath.Join(pathToUse, filename+".mp4")
+	if fileAlreadyExists(destPath) {
+		fmt.Printf("%s already exists\n", destPath)
+		return
+	}
+	fmt.Printf("Preparing to download to %s\n", destPath)
+
 }
 
 func strPtr(s *string) string {
@@ -291,6 +217,129 @@ func int64Ptr(d *int64) int {
 		return 0
 	}
 	return int(*d)
+}
+
+// extractVideoDataFromPage extracts the video data used to then call the API
+// the data is stored in the HTML page as a JSON object. This function extracts
+// the JSON object and returns a VideoData struct.
+// Note that the script location changes often and the lookup is quite fragile.
+func extractVideoDataFromPage(givenURL string) (*VideoData, error) {
+	res, err := http.Get(givenURL)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		log.Printf("Can't download %s\nStatus code error: %d %s", givenURL, res.StatusCode, res.Status)
+		return nil, fmt.Errorf("Bad Status code fetching %s: %d %s", givenURL, res.StatusCode, res.Status)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to parse the page: %s", err)
+	}
+
+	scriptText := doc.Find("div > div.l-column-left > script").Text()
+	scriptText = strings.TrimSpace(scriptText)
+	if !strings.HasPrefix(scriptText, "window.FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos") {
+		return nil, ErrNoPlayerData
+	}
+	startIDX := strings.Index(scriptText, "[")
+	endIDX := strings.LastIndex(scriptText, ";")
+	if startIDX < 0 || endIDX <= startIDX {
+		log.Printf("Didn't find the expected json data in %s - %v\n", givenURL, scriptText)
+		if *dlAllFlag {
+			return nil, ErrMissingPayerJSONData
+		}
+	}
+	log.Printf("Parsing the json data")
+	jsonString := scriptText[startIDX:endIDX]
+	var data []VideoData
+	if err := json.Unmarshal([]byte(jsonString), &data); err != nil {
+		log.Printf("Failed to parse json data:\n%s\nerr: %v", jsonString, err)
+		return nil, ErrBadPlayerJSONData
+	}
+
+	return &data[0], nil
+}
+
+func fetchStreamInfo(videoID string, productID int, originURL string) (*StreamData, error) {
+
+	reqURL := fmt.Sprintf("https://k7.ftven.fr/videos/%s?country_code=FR&w=955&h=537&screen_w=1680&screen_h=1050&player_version=5.71.7&domain=www.france.tv&device_type=desktop&browser=chrome&browser_version=108&os=macos&os_version=10_15_7&diffusion_mode=tunnel_first&gmt=0100&video_product_id=%d", videoID, productID)
+
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("could not create request for %s, err: %v", reqURL, err)
+	}
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "fr-FR;q=0.9,fr;q=0.8")
+	req.Header.Set("Dnt", "1")
+	req.Header.Set("Origin", "https://www.france.tv")
+	req.Header.Set("Referer", fmt.Sprintf("https://www.france.tv%s", originURL))
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36")
+	req.Header.Set("Sec-Ch-Ua", "Chromium\";v=\"108\", \"Google Chrome\";v=\"108\"")
+	req.Header.Set("Sec-Ch-Ua-Platform", "\"macOS\"")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request to %s, err: %v", reqURL, err)
+
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to download %s, status code: %d", reqURL, resp.StatusCode)
+	}
+
+	var stream StreamData
+	err = json.NewDecoder(resp.Body).Decode(&stream)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse JSON response data\nerr: %v", err)
+	}
+	return &stream, nil
+}
+
+// download and returns the MPD file for th given stream. The caller is responsible for closing the file
+func downloadMPDFile(stream *StreamData, outPath string) (*os.File, error) {
+
+	var manifestURL string
+	if stream.Video.Token == "" {
+		if *debugFlag {
+			fmt.Println("video token not set")
+		}
+		manifestURL = stream.Video.URL
+	} else {
+		tokenURL := fmt.Sprintf("%s&url=%s", stream.Video.Token, stream.Video.URL)
+		tokenURL = strings.Replace(tokenURL, "format=json", "format=text", 1)
+		resp, err := http.Get(tokenURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch the token URL %s - %s", tokenURL, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return nil, fmt.Errorf("stream for %s not available: %d %s", tokenURL, resp.StatusCode, resp.Status)
+		}
+
+		b, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read the token URL %s - %s", tokenURL, err)
+		}
+		manifestURL = string(b)
+	}
+
+	// we now have the mpd URL
+	if *debugFlag {
+		fmt.Println("MPD manifest URL", manifestURL)
+	}
+	f, err := downloadFile(manifestURL, outPath)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to download the manifest url: %s - %s\n", manifestURL, err)
+	}
+	f.Seek(0, io.SeekStart)
+	return f, nil
 }
 
 func downloadHLSVideo(givenURL string) {
