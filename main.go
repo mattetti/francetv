@@ -250,13 +250,47 @@ func downloadDashVideo(givenURL string) {
 	}
 
 	for _, period := range mpdData.Periods {
+		fmt.Printf("%s, duration: %s\n\n", period.BaseURL, time.Duration(period.Duration).String())
 		for _, adaptationSet := range period.AdaptationSets {
-			for _, representation := range adaptationSet.Representations {
-				fmt.Printf("Representation: %+v\n", representation)
+			fmt.Printf("Adaptation set ID: %s/%s - %s, mimeType: %s, lang: %s, codecs: %s \n",
+				strPtr(adaptationSet.ID),
+				strPtr(adaptationSet.Group),
+				strPtr(adaptationSet.ContentType),
+				strPtr(adaptationSet.MimeType),
+				strPtr(adaptationSet.Lang),
+				strPtr(adaptationSet.Codecs),
+			)
+			// var codecs string
+			for _, r := range adaptationSet.Representations {
+				switch *adaptationSet.ContentType {
+				case "video":
+					fmt.Printf("Rep ID: %s, Bandwidth: %d, width: %d, height: %d, codecs: %s, scanType: %s\n", strPtr(r.ID), int64Ptr(r.Bandwidth), int64Ptr(r.Width), int64Ptr(r.Height), strPtr(r.Codecs), strPtr(r.ScanType))
+				case "audio":
+					fmt.Printf("Rep ID: %s, Bandwidth: %d\n", strPtr(r.ID), int64Ptr(r.Bandwidth))
+				case "text":
+					fmt.Printf("Rep ID: %s\n", strPtr(r.ID))
+				default:
+					log.Printf("Unknown content type: %s", *adaptationSet.ContentType)
+				}
 			}
+			fmt.Println()
 		}
 	}
 
+}
+
+func strPtr(s *string) string {
+	if s == nil {
+		return "unknown"
+	}
+	return *s
+}
+
+func int64Ptr(d *int64) int {
+	if d == nil {
+		return 0
+	}
+	return int(*d)
 }
 
 func downloadHLSVideo(givenURL string) {
