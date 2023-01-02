@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/mattetti/m3u8Grabber/m3u8"
+	"github.com/zencoder/go-dash/mpd"
 )
 
 var (
@@ -25,6 +27,7 @@ var (
 	dlAllFlag = flag.Bool("all", false, "Download all episodes if the page contains multiple videos.")
 	subsOnly  = flag.Bool("subsOnly", false, "Only download the subtitles.")
 	URLFlag   = flag.String("url", "", "URL of the page to backup.")
+	hlsFlag   = flag.Bool("m3u8", true, "Should use HLS/m3u8 format to download (instead of dash)")
 )
 
 func main() {
@@ -57,10 +60,12 @@ func main() {
 			*dlAllFlag = true
 		}
 	}
-	// start the workers
 	w := &sync.WaitGroup{}
-	stopChan := make(chan bool)
-	m3u8.LaunchWorkers(w, stopChan)
+	if *hlsFlag {
+		// start the m3u8 workers
+		stopChan := make(chan bool)
+		m3u8.LaunchWorkers(w, stopChan)
+	}
 
 	// let's get all the videos for the replay page
 	if strings.Contains(givenURL, "replay-videos") || strings.Contains(givenURL, "toutes-les-videos") {
@@ -68,17 +73,193 @@ func main() {
 		urls := collectionURLs(givenURL, nil)
 		log.Printf("%d videos found in %s\n", len(urls), givenURL)
 		for _, pageURL := range urls {
-			downloadVideo(pageURL)
+			if *hlsFlag {
+				downloadHLSVideo(pageURL)
+			} else {
+				downloadDashVideo(pageURL)
+			}
 		}
 	} else {
-		downloadVideo(givenURL)
+		if *hlsFlag {
+			downloadHLSVideo(givenURL)
+		} else {
+			downloadDashVideo(givenURL)
+		}
 	}
 
-	close(m3u8.DlChan)
-	w.Wait()
+	if *hlsFlag {
+		close(m3u8.DlChan)
+		w.Wait()
+	}
 }
 
-func downloadVideo(givenURL string) {
+func downloadDashVideo(givenURL string) {
+
+	// 0. Parse the page to find the product/video IDs
+	res, err := http.Get(givenURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		log.Printf("Can't download %s\nStatus code error: %d %s", givenURL, res.StatusCode, res.Status)
+		return
+	}
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	scriptText := doc.Find("div > div.l-column-left > script").Text()
+	scriptText = strings.TrimSpace(scriptText)
+	if !strings.HasPrefix(scriptText, "window.FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos") {
+		log.Println("Could not find the video data in the page")
+		os.Exit(1)
+		return
+	}
+
+	startIDX := strings.Index(scriptText, "[")
+	endIDX := strings.LastIndex(scriptText, ";")
+	if startIDX < 0 || endIDX <= startIDX {
+		log.Println("Could not find the expected JSON video data in the page")
+		os.Exit(1)
+		return
+	}
+
+	log.Printf("Parsing the json data")
+	jsonString := scriptText[startIDX:endIDX]
+	var data []VideoData
+	if err := json.Unmarshal([]byte(jsonString), &data); err != nil {
+		log.Fatalf("Failed to parse json data:\n%s\nerr: %v", jsonString, err)
+
+	}
+	// fmt.Printf("data: %#v\n", data)
+	productID := data[0].ContentID
+	videoID := data[0].VideoID
+	// fmt.Println("Video Title:", data[0].VideoTitle)
+	// fmt.Printf("Video Id: %#v\n", data[0].VideoID)
+
+	// 1. Call the API to get the manifest using the video and product IDs we just recovered
+
+	reqURL := fmt.Sprintf("https://k7.ftven.fr/videos/%s?country_code=FR&w=955&h=537&screen_w=1680&screen_h=1050&player_version=5.71.7&domain=www.france.tv&device_type=desktop&browser=chrome&browser_version=108&os=macos&os_version=10_15_7&diffusion_mode=tunnel_first&gmt=0100&video_product_id=%d", videoID, productID)
+
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		fmt.Printf("Could not create request for %s, err: %v", reqURL, err)
+		os.Exit(1)
+	}
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9,fr-FR;q=0.8,fr;q=0.7,es-US;q=0.6,es;q=0.5")
+	req.Header.Set("Dnt", "1")
+	req.Header.Set("Origin", "https://www.france.tv")
+	req.Header.Set("Referer", fmt.Sprintf("https://www.france.tv%s", data[0].OriginURL))
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36")
+	req.Header.Set("Sec-Ch-Ua", "Chromium\";v=\"108\", \"Google Chrome\";v=\"108\"")
+	req.Header.Set("Sec-Ch-Ua-Platform", "\"macOS\"")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Printf("Could not send request to %s, err: %v", reqURL, err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		log.Printf("Can't download %s", reqURL)
+		os.Exit(1)
+	}
+
+	var stream StreamData
+	err = json.NewDecoder(resp.Body).Decode(&stream)
+	if err != nil {
+		log.Fatalf("Failed to parse response data\nerr: %v", err)
+	}
+	resp.Body.Close()
+
+	// 2. Using the stream data, prepare the request to get the mpd temp, signed URL
+
+	// fmt.Printf("stream data: %+v\n", stream)
+
+	preTitle := stream.Meta.PreTitle
+	if preTitle == "" {
+		preTitle = data[0].VideoTitle
+	}
+	preTitle = strings.ReplaceAll(preTitle, " ", "")
+	filename := fmt.Sprintf("%s - %s - %s", stream.Meta.Title, preTitle, stream.Meta.AdditionalTitle)
+
+	pathToUse, err := os.Getwd()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	destPath := filepath.Join(pathToUse, filename+".mp4")
+	if fileAlreadyExists(destPath) {
+		fmt.Printf("%s already exists\n", destPath)
+		return
+	}
+	fmt.Printf("Preparing to download to %s\n", destPath)
+
+	var manifestURL string
+	if stream.Video.Token == "" {
+		fmt.Println("video token not set")
+		manifestURL = stream.Video.URL
+	} else {
+		tokenURL := fmt.Sprintf("%s&url=%s", stream.Video.Token, stream.Video.URL)
+		tokenURL = strings.Replace(tokenURL, "format=json", "format=text", 1)
+		res3, err := http.Get(tokenURL)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer res3.Body.Close()
+		if res3.StatusCode != 200 {
+			log.Printf("Stream for %s not available: %d %s", tokenURL, res3.StatusCode, res3.Status)
+			return
+		}
+
+		b, err := ioutil.ReadAll(res3.Body)
+		if err != nil {
+			panic(err)
+		}
+		manifestURL = string(b)
+	}
+
+	manifestPath := filepath.Join(pathToUse, filename+".mpd")
+
+	// we now have the mpd URL
+	fmt.Println("MPD manifest URL", manifestURL)
+	f, err := downloadFile(manifestURL, manifestPath)
+	if err != nil {
+		fmt.Printf("Failed to download the manifest url: %s - %s\n", manifestURL, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	f.Seek(0, io.SeekStart)
+	mpdData, err := mpd.Read(f)
+	if err != nil {
+		fmt.Printf("Failed to read the mpd file - %s\n", err)
+		os.Exit(1)
+	}
+
+	if mpdData.Type != nil && (*mpdData.Type == "dynamic") {
+		log.Println("dynamic mpd not supported")
+		return
+	}
+
+	for _, period := range mpdData.Periods {
+		for _, adaptationSet := range period.AdaptationSets {
+			for _, representation := range adaptationSet.Representations {
+				fmt.Printf("Representation: %+v\n", representation)
+			}
+		}
+	}
+
+}
+
+func downloadHLSVideo(givenURL string) {
 	res, err := http.Get(givenURL)
 	if err != nil {
 		log.Fatal(err)
@@ -98,11 +279,12 @@ func downloadVideo(givenURL string) {
 	scriptText = strings.TrimSpace(scriptText)
 	if !strings.HasPrefix(scriptText, "window.FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos") {
 		// not a player page
+		//log.Println("Collection page?")
 		urls := collectionURLs(givenURL, nil)
 		if len(urls) > 0 {
 			log.Printf("%d videos found in %s\n", len(urls), givenURL)
 			for _, pageURL := range urls {
-				downloadVideo(pageURL)
+				downloadHLSVideo(pageURL)
 			}
 		} else {
 			log.Fatalf("Unexpected script content, expected to find FTVPlayerVideos or a video player\nMake sure you picked an episode page.\nfound script:%s\n", scriptText)
@@ -115,7 +297,7 @@ func downloadVideo(givenURL string) {
 		if *dlAllFlag {
 			return
 		}
-		log.Println("Would you like to contine [y,n]")
+		log.Println("Would you like to continue [y,n]")
 		reader := bufio.NewReader(os.Stdin)
 		for {
 			input, _ := reader.ReadString('\n')
@@ -145,7 +327,7 @@ func downloadVideo(givenURL string) {
 
 	req, _ := http.NewRequest("GET", apiURL, nil)
 	req.Header.Set("Origin", "https://www.france.tv")
-	req.Header.Set("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.1 Safari/605.1.15")
+	// req.Header.Set("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.1 Safari/605.1.15")
 	req.Header.Set("Host", "player.webservices.francetelevisions.fr")
 	req.Header.Set("Referer", "https://www.france.tv/")
 	res2, err := http.DefaultClient.Do(req)
@@ -183,6 +365,7 @@ func downloadVideo(givenURL string) {
 		return
 	}
 	fmt.Printf("Preparing to download to %s\n", destPath)
+	fmt.Printf("stream: %+v\n", stream)
 
 	var manifestURL string
 	if stream.Video.Token == "" {
@@ -206,7 +389,7 @@ func downloadVideo(givenURL string) {
 		manifestURL = string(b)
 	}
 
-	log.Printf("Master m3u8: %s\n", manifestURL)
+	log.Printf("Manifest file: %s\n", manifestURL)
 
 	if stream.Video.Format == "hls" {
 		job := &m3u8.WJob{
@@ -220,10 +403,9 @@ func downloadVideo(givenURL string) {
 		return
 	}
 
-	// if stream.Video.Format == "dash" {
-	// https://godoc.org/github.com/zencoder/go-dash/mpd
-	// 	stream.Video.Token
-	// }
+	if stream.Video.Format == "dash" {
+		downloadDashVideo(givenURL)
+	}
 	fmt.Printf("%s is in an unsupported format: %s\n", filename, stream.Video.Format)
 	fmt.Printf("Data: %s\n", apiURL)
 }
@@ -291,6 +473,37 @@ func collectionURLs(givenURL string, episodeURLs []string) []string {
 	return episodeURLs
 }
 
+func downloadFile(url string, path string) (*os.File, error) {
+	// Create the file
+	out, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// for mpd
+	// "Accept", "application/dash+xml,video/vnd.mpeg.dash.mpd"
+
+	// Get the data
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// Check server response
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("bad status: %s", resp.Status)
+	}
+
+	// Write the body to file
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return out, nil
+}
+
 func fileAlreadyExists(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
@@ -323,28 +536,45 @@ type VideoData struct {
 	SeasonNumber int         `json:"seasonNumber"`
 }
 
+type StreamDataVideo struct {
+	Workflow           string        `json:"workflow"`
+	Token              string        `json:"token"`
+	Duration           int           `json:"duration"`
+	Embed              bool          `json:"embed"`
+	Format             string        `json:"format"`
+	OfflineRights      bool          `json:"offline_rights"`
+	IsLive             bool          `json:"is_live"`
+	Drm                interface{}   `json:"drm"`
+	DrmType            interface{}   `json:"drm_type"`
+	LicenseType        interface{}   `json:"license_type"`
+	PlayerVerification bool          `json:"player_verification"`
+	IsDVR              bool          `json:"is_DVR"`
+	Spritesheets       []interface{} `json:"spritesheets"`
+	IsStartoverEnabled bool          `json:"is_startover_enabled"`
+	Previously         struct {
+		Timecode          interface{} `json:"timecode"`
+		Duration          interface{} `json:"duration"`
+		TimeBeforeDismiss interface{} `json:"time_before_dismiss"`
+	} `json:"previously"`
+	ComingNext struct {
+		Timecode int `json:"timecode"`
+		Duration int `json:"duration"`
+	} `json:"coming_next"`
+	SkipIntro struct {
+		Timecode          interface{} `json:"timecode"`
+		Duration          interface{} `json:"duration"`
+		TimeBeforeDismiss interface{} `json:"time_before_dismiss"`
+	} `json:"skip_intro"`
+	Timeshiftable interface{}   `json:"timeshiftable"`
+	URL           string        `json:"url"`
+	DaiType       interface{}   `json:"dai_type"`
+	Captions      []interface{} `json:"captions"`
+	Offline       interface{}   `json:"offline"`
+}
+
 type StreamData struct {
-	Video struct {
-		Workflow           string        `json:"workflow"`
-		Token              string        `json:"token"`
-		Duration           int           `json:"duration"`
-		Embed              bool          `json:"embed"`
-		Format             string        `json:"format"`
-		OfflineRights      bool          `json:"offline_rights"`
-		IsLive             bool          `json:"is_live"`
-		Drm                interface{}   `json:"drm"`
-		PlayerVerification bool          `json:"player_verification"`
-		IsDVR              bool          `json:"is_DVR"`
-		Spritesheets       []interface{} `json:"spritesheets"`
-		IsStartoverEnabled bool          `json:"is_startover_enabled"`
-		ComingNext         struct {
-			Timecode int `json:"timecode"`
-			Duration int `json:"duration"`
-		} `json:"coming_next"`
-		URL      string        `json:"url"`
-		Captions []interface{} `json:"captions"`
-	} `json:"video"`
-	Meta struct {
+	Video StreamDataVideo `json:"video"`
+	Meta  struct {
 		ID              string    `json:"id"`
 		PlurimediaID    string    `json:"plurimedia_id"`
 		Title           string    `json:"title"`
