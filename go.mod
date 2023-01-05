@@ -17,7 +17,7 @@ require (
 	github.com/asticode/go-astisub v0.23.0 // indirect
 	github.com/asticode/go-astits v1.11.0 // indirect
 	github.com/barbashov/iso639-3 v0.0.0-20211020172741-1f4ffb2d8d1c // indirect
-	github.com/mattetti/mpdgrabber v0.0.0-20230105064412-02b920ae62f3 // indirect
+	github.com/mattetti/mpdgrabber v0.0.0-20230105072504-54af5bd8492a // indirect
 	github.com/zencoder/go-dash/v3 v3.0.3 // indirect
 	golang.org/x/net v0.4.0 // indirect
 	golang.org/x/text v0.5.0 // indirect

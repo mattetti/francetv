@@ -25,6 +25,8 @@ github.com/mattetti/mpdgrabber v0.0.0-20230105042955-00b24575dcdb h1:39H3ZV2MUbx
 github.com/mattetti/mpdgrabber v0.0.0-20230105042955-00b24575dcdb/go.mod h1:UhfQO7glCBV+8l20sUkHuMXdY+S1z/lhLOffGHdDYBA=
 github.com/mattetti/mpdgrabber v0.0.0-20230105064412-02b920ae62f3 h1:JCMJEhskq5ZHjSCeD6SngzqnvbNvqJX5Ky4pdTKkN5M=
 github.com/mattetti/mpdgrabber v0.0.0-20230105064412-02b920ae62f3/go.mod h1:UhfQO7glCBV+8l20sUkHuMXdY+S1z/lhLOffGHdDYBA=
+github.com/mattetti/mpdgrabber v0.0.0-20230105072504-54af5bd8492a h1:b4wm6WfK/6Z9Wo3QVf/z15inkdmugI6UGX1R7zSbtCY=
+github.com/mattetti/mpdgrabber v0.0.0-20230105072504-54af5bd8492a/go.mod h1:UhfQO7glCBV+8l20sUkHuMXdY+S1z/lhLOffGHdDYBA=
 github.com/phayes/freeport v0.0.0-20180830031419-95f893ade6f2 h1:JhzVVoYvbOACxoUmOs6V/G4D5nPVUW73rKvXxP4XUJc=
 github.com/phayes/freeport v0.0.0-20180830031419-95f893ade6f2/go.mod h1:iIss55rKnNBTvrwdmkUpLnDpZoAHvWaiq5+iMmen4AE=
 github.com/pkg/profile v1.4.0/go.mod h1:NWz/XGvpEW1FyYQ7fCx4dqYBLlfTcE+A9FLAkNKqjFE=
