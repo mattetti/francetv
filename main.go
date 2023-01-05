@@ -20,7 +20,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/mattetti/m3u8Grabber/m3u8"
-	"github.com/zencoder/go-dash/mpd"
+	"github.com/mattetti/mpdgrabber"
 )
 
 var (
@@ -28,7 +28,7 @@ var (
 	dlAllFlag = flag.Bool("all", false, "Download all episodes if the page contains multiple videos.")
 	subsOnly  = flag.Bool("subsOnly", false, "Only download the subtitles.")
 	URLFlag   = flag.String("url", "", "URL of the page to backup.")
-	hlsFlag   = flag.Bool("m3u8", true, "Should use HLS/m3u8 format to download (instead of dash)")
+	hlsFlag   = flag.Bool("m3u8", false, "Should use HLS/m3u8 format to download (instead of dash)")
 )
 
 var ErrNoPlayerData = errors.New("no playerData found")
@@ -44,6 +44,7 @@ func main() {
 	}
 	if *debugFlag {
 		m3u8.Debug = true
+		mpdgrabber.Debug = true
 	}
 
 	if *subsOnly {
@@ -66,10 +67,12 @@ func main() {
 		}
 	}
 	w := &sync.WaitGroup{}
+	stopChan := make(chan bool)
 	if *hlsFlag {
 		// start the m3u8 workers
-		stopChan := make(chan bool)
 		m3u8.LaunchWorkers(w, stopChan)
+	} else {
+		mpdgrabber.LaunchWorkers(w, stopChan)
 	}
 
 	// let's get all the videos for the replay page
@@ -94,6 +97,9 @@ func main() {
 
 	if *hlsFlag {
 		close(m3u8.DlChan)
+		w.Wait()
+	} else {
+		mpdgrabber.Close()
 		w.Wait()
 	}
 }
@@ -147,61 +153,19 @@ func downloadDashVideo(givenURL string) {
 		log.Fatal(err)
 	}
 
-	// 3. Download the mpd file
-	manifestPath := filepath.Join(pathToUse, filename+".mpd")
-	mpdf, err := downloadMPDFile(stream, manifestPath)
-	if err != nil {
-		fmt.Println("Failed to download the mpd file")
+	// 3. Download the content
+
+	// TODO: this assumes a mkv output, we might want to pass that as a flag
+	finalFile := filepath.Join(pathToUse, filename+".mkv")
+	if fileAlreadyExists(finalFile) {
+		fmt.Printf("%s already exists\n", finalFile)
+		return
+	}
+	if err := downloadMPDFile(stream, pathToUse, filename); err != nil {
+		fmt.Println("Failed to download the streams file")
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	defer mpdf.Close()
-
-	mpdData, err := mpd.Read(mpdf)
-	if err != nil {
-		fmt.Printf("Failed to read the mpd file - %s\n", err)
-		os.Exit(1)
-	}
-
-	if mpdData.Type != nil && (*mpdData.Type == "dynamic") {
-		log.Println("dynamic mpd not supported")
-		return
-	}
-
-	for _, period := range mpdData.Periods {
-		fmt.Printf("%s, duration: %s\n\n", period.BaseURL, time.Duration(period.Duration).String())
-		for _, adaptationSet := range period.AdaptationSets {
-			fmt.Printf("Adaptation set ID: %s/%s - %s, mimeType: %s, lang: %s, codecs: %s \n",
-				strPtr(adaptationSet.ID),
-				strPtr(adaptationSet.Group),
-				strPtr(adaptationSet.ContentType),
-				strPtr(adaptationSet.MimeType),
-				strPtr(adaptationSet.Lang),
-				strPtr(adaptationSet.Codecs),
-			)
-			// var codecs string
-			for _, r := range adaptationSet.Representations {
-				switch *adaptationSet.ContentType {
-				case "video":
-					fmt.Printf("Rep ID: %s, Bandwidth: %d, width: %d, height: %d, codecs: %s, scanType: %s\n", strPtr(r.ID), int64Ptr(r.Bandwidth), int64Ptr(r.Width), int64Ptr(r.Height), strPtr(r.Codecs), strPtr(r.ScanType))
-				case "audio":
-					fmt.Printf("Rep ID: %s, Bandwidth: %d\n", strPtr(r.ID), int64Ptr(r.Bandwidth))
-				case "text":
-					fmt.Printf("Rep ID: %s\n", strPtr(r.ID))
-				default:
-					log.Printf("Unknown content type: %s", *adaptationSet.ContentType)
-				}
-			}
-			fmt.Println()
-		}
-	}
-
-	destPath := filepath.Join(pathToUse, filename+".mp4")
-	if fileAlreadyExists(destPath) {
-		fmt.Printf("%s already exists\n", destPath)
-		return
-	}
-	fmt.Printf("Preparing to download to %s\n", destPath)
 
 }
 
@@ -302,9 +266,8 @@ func fetchMPDStreamInfo(videoID string, productID int, originURL string) (*Strea
 	return &stream, nil
 }
 
-// download and returns the MPD file for th given stream. The caller is responsible for closing the file
-func downloadMPDFile(stream *StreamData, outPath string) (*os.File, error) {
-
+// start the download after finding the manifest URL
+func downloadMPDFile(stream *StreamData, outPath, outFilename string) error {
 	var manifestURL string
 	if stream.Video.Token == "" {
 		if *debugFlag {
@@ -316,16 +279,16 @@ func downloadMPDFile(stream *StreamData, outPath string) (*os.File, error) {
 		tokenURL = strings.Replace(tokenURL, "format=json", "format=text", 1)
 		resp, err := http.Get(tokenURL)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch the token URL %s - %s", tokenURL, err)
+			return fmt.Errorf("failed to fetch the token URL %s - %s", tokenURL, err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
-			return nil, fmt.Errorf("stream for %s not available: %d %s", tokenURL, resp.StatusCode, resp.Status)
+			return fmt.Errorf("stream for %s not available: %d %s", tokenURL, resp.StatusCode, resp.Status)
 		}
 
 		b, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read the token URL %s - %s", tokenURL, err)
+			return fmt.Errorf("failed to read the token URL %s - %s", tokenURL, err)
 		}
 		manifestURL = string(b)
 	}
@@ -334,12 +297,8 @@ func downloadMPDFile(stream *StreamData, outPath string) (*os.File, error) {
 	if *debugFlag {
 		fmt.Println("MPD manifest URL", manifestURL)
 	}
-	f, err := downloadFile(manifestURL, outPath)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to download the manifest url: %s - %s\n", manifestURL, err)
-	}
-	f.Seek(0, io.SeekStart)
-	return f, nil
+
+	return mpdgrabber.DownloadFromMPDFile(manifestURL, outPath, outFilename)
 }
 
 func getHLSManifestURL(stream *StreamData) (string, error) {
