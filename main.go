@@ -587,8 +587,8 @@ type StreamDataVideo struct {
 		TimeBeforeDismiss interface{} `json:"time_before_dismiss"`
 	} `json:"previously"`
 	ComingNext struct {
-		Timecode int `json:"timecode"`
-		Duration int `json:"duration"`
+		Timecode interface{} `json:"timecode"`
+		Duration int         `json:"duration"`
 	} `json:"coming_next"`
 	SkipIntro struct {
 		Timecode          interface{} `json:"timecode"`
