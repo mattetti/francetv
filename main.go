@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -162,7 +163,7 @@ func downloadDashVideo(givenURL string) {
 		return
 	}
 	if err := downloadMPDFile(stream, pathToUse, filename); err != nil {
-		fmt.Println("Failed to download the streams file")
+		fmt.Println("Failed to download the MPD streams file")
 		fmt.Println(err)
 		os.Exit(1)
 	}
@@ -208,6 +209,7 @@ func extractVideoDataFromPage(givenURL string) (*VideoData, error) {
 	if !strings.HasPrefix(scriptText, "window.FTVPlayerVideos") && !strings.HasPrefix(scriptText, "let FTVPlayerVideos") {
 		return nil, ErrNoPlayerData
 	}
+
 	startIDX := strings.Index(scriptText, "[")
 	endIDX := strings.LastIndex(scriptText, ";")
 	if startIDX < 0 || endIDX <= startIDX {
@@ -215,12 +217,13 @@ func extractVideoDataFromPage(givenURL string) (*VideoData, error) {
 		if *dlAllFlag {
 			return nil, ErrMissingPayerJSONData
 		}
+		return nil, ErrMissingPayerJSONData
 	}
 	log.Printf("Parsing the json data")
 	jsonString := scriptText[startIDX:endIDX]
 	var data []VideoData
 	if err := json.Unmarshal([]byte(jsonString), &data); err != nil {
-		log.Printf("Failed to parse json data:\n%s\nerr: %v", jsonString, err)
+		log.Printf("Failed to parse video json data:\n%s\nerr: %v", jsonString, err)
 		return nil, ErrBadPlayerJSONData
 	}
 
@@ -259,9 +262,12 @@ func fetchMPDStreamInfo(videoID string, productID int, originURL string) (*Strea
 	}
 
 	var stream StreamData
-	err = json.NewDecoder(resp.Body).Decode(&stream)
+	var bodyBuffer bytes.Buffer
+	tee := io.TeeReader(resp.Body, &bodyBuffer)
+
+	err = json.NewDecoder(tee).Decode(&stream)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse JSON response data\nerr: %v", err)
+		return nil, fmt.Errorf("failed to parse the MPD JSON response data\nerr: %v\nbody: %s", err, bodyBuffer.String())
 	}
 	return &stream, nil
 }
@@ -269,17 +275,17 @@ func fetchMPDStreamInfo(videoID string, productID int, originURL string) (*Strea
 // start the download after finding the manifest URL
 func downloadMPDFile(stream *StreamData, outPath, outFilename string) error {
 	var manifestURL string
-	if stream.Video.Token == "" {
+	if stream.Video.Token.Akamai == "" {
 		if *debugFlag {
 			fmt.Println("video token not set")
 		}
 		manifestURL = stream.Video.URL
 	} else {
-		tokenURL := fmt.Sprintf("%s&url=%s", stream.Video.Token, stream.Video.URL)
+		tokenURL := fmt.Sprintf("%s&url=%s", stream.Video.Token.Akamai, stream.Video.URL)
 		tokenURL = strings.Replace(tokenURL, "format=json", "format=text", 1)
 		resp, err := http.Get(tokenURL)
 		if err != nil {
-			return fmt.Errorf("failed to fetch the token URL %s - %s", tokenURL, err)
+			return fmt.Errorf("failed to fetch the mpd token URL %s - %s", tokenURL, err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
@@ -288,7 +294,7 @@ func downloadMPDFile(stream *StreamData, outPath, outFilename string) error {
 
 		b, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			return fmt.Errorf("failed to read the token URL %s - %s", tokenURL, err)
+			return fmt.Errorf("failed to read the mpd token URL %s - %s", tokenURL, err)
 		}
 		manifestURL = string(b)
 	}
@@ -303,13 +309,13 @@ func downloadMPDFile(stream *StreamData, outPath, outFilename string) error {
 
 func getHLSManifestURL(stream *StreamData) (string, error) {
 	var manifestURL string
-	if stream.Video.Token == "" {
+	if stream.Video.Token.Akamai == "" {
 		manifestURL = stream.Video.URL
 	} else {
-		tokenURL := strings.Replace(stream.Video.Token, "format=json", "format=text", 1)
+		tokenURL := strings.Replace(stream.Video.Token.Akamai, "format=json", "format=text", 1)
 		resp, err := http.Get(tokenURL)
 		if err != nil {
-			return "", fmt.Errorf("failed to fetch the token URL %s - %s", tokenURL, err)
+			return "", fmt.Errorf("failed to fetch the HLS token URL %s - %s", tokenURL, err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
@@ -347,10 +353,13 @@ func fetchHSLStreamInfo(videoID string) (*StreamData, error) {
 		return nil, fmt.Errorf("failed to download %s, status code: %d", apiURL, resp.StatusCode)
 	}
 
+	var bodyBuffer bytes.Buffer
+	tee := io.TeeReader(resp.Body, &bodyBuffer)
+
 	var stream StreamData
-	err = json.NewDecoder(resp.Body).Decode(&stream)
+	err = json.NewDecoder(tee).Decode(&stream)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse JSON response data\nerr: %v", err)
+		return nil, fmt.Errorf("failed to parse JSON response data\nerr: %v\nbody: %s", err, bodyBuffer.String())
 	}
 	return &stream, nil
 }
@@ -603,38 +612,65 @@ type StreamDataVideo struct {
 }
 
 type StreamData struct {
-	Video StreamDataVideo `json:"video"`
-	Meta  struct {
-		ID              string    `json:"id"`
-		PlurimediaID    string    `json:"plurimedia_id"`
-		Title           string    `json:"title"`
-		AdditionalTitle string    `json:"additional_title"`
-		PreTitle        string    `json:"pre_title"`
-		BroadcastedAt   time.Time `json:"broadcasted_at"`
-		ImageURL        string    `json:"image_url"`
+	Video struct {
+		Workflow interface{} `json:"workflow"`
+		Token    struct {
+			Akamai string `json:"akamai"`
+		} `json:"token"`
+		Duration     int         `json:"duration"`
+		Embed        bool        `json:"embed"`
+		Format       string      `json:"format"`
+		IsLive       bool        `json:"is_live"`
+		Drm          bool        `json:"drm"`
+		DrmType      interface{} `json:"drm_type"`
+		LicenseType  interface{} `json:"license_type"`
+		Spritesheets []struct {
+			Width    int      `json:"width"`
+			Height   int      `json:"height"`
+			Images   []string `json:"images"`
+			Lines    int      `json:"lines"`
+			Columns  int      `json:"columns"`
+			Interval float64  `json:"interval"`
+		} `json:"spritesheets"`
+		IsStartoverEnabled bool `json:"is_startover_enabled"`
+		Previously         struct {
+			Timecode          interface{} `json:"timecode"`
+			Duration          interface{} `json:"duration"`
+			TimeBeforeDismiss interface{} `json:"time_before_dismiss"`
+		} `json:"previously"`
+		ComingNext struct {
+			Timecode          interface{} `json:"timecode"`
+			Duration          interface{} `json:"duration"`
+			TimeBeforeDismiss interface{} `json:"time_before_dismiss"`
+		} `json:"coming_next"`
+		SkipIntro struct {
+			Timecode          interface{} `json:"timecode"`
+			Duration          interface{} `json:"duration"`
+			TimeBeforeDismiss interface{} `json:"time_before_dismiss"`
+		} `json:"skip_intro"`
+		ClosingCredits struct {
+			Timecode interface{} `json:"timecode"`
+		} `json:"closing_credits"`
+		Timeshiftable   interface{} `json:"timeshiftable"`
+		DaiType         interface{} `json:"dai_type"`
+		URL             string      `json:"url"`
+		Offline         interface{} `json:"offline"`
+		IsHighlightable bool        `json:"is_highlightable"`
+		IsEpgable       bool        `json:"is_epgable"`
+		HasHighlights   bool        `json:"has_highlights"`
+	} `json:"video"`
+	Meta struct {
+		ID              string      `json:"id"`
+		Title           string      `json:"title"`
+		AdditionalTitle string      `json:"additional_title"`
+		PreTitle        string      `json:"pre_title"`
+		BroadcastedAt   time.Time   `json:"broadcasted_at"`
+		ImageURL        string      `json:"image_url"`
+		Event           interface{} `json:"event"`
 	} `json:"meta"`
-	Streamroot struct {
-		Enabled   bool   `json:"enabled"`
-		ContentID string `json:"content_id"`
-		Property  string `json:"property"`
-		License   string `json:"license"`
-	} `json:"streamroot"`
 	Markers struct {
-		Analytics struct {
-			IsTrackingEnabled bool   `json:"isTrackingEnabled"`
-			IDSite            int    `json:"idSite"`
-			Variant           string `json:"variant"`
-			GeneralPlacement  string `json:"generalPlacement"`
-			DetailedPlacement string `json:"detailedPlacement"`
-			URL               string `json:"url"`
-			Server            string `json:"server"`
-			DiffusionDate     string `json:"diffusionDate"`
-			ProgramName       string `json:"programName"`
-			VideoTitle        string `json:"videoTitle"`
-			Season            int    `json:"season"`
-		} `json:"analytics"`
 		Estat struct {
-			CrmID          string      `json:"crmID"`
+			CrmID          interface{} `json:"crmID"`
 			Dom            interface{} `json:"dom"`
 			Level1         string      `json:"level1"`
 			Level2         string      `json:"level2"`
@@ -651,11 +687,10 @@ type StreamData struct {
 			NewLevel4      string      `json:"newLevel4"`
 			NewLevel5      string      `json:"newLevel5"`
 			NewLevel6      string      `json:"newLevel6"`
-			NewLevel7      interface{} `json:"newLevel7"`
+			NewLevel7      string      `json:"newLevel7"`
 			NewLevel8      string      `json:"newLevel8"`
 			NewLevel9      interface{} `json:"newLevel9"`
-			NewLevel10     interface{} `json:"newLevel10"`
-			NewLevel11     interface{} `json:"newLevel11"`
+			NewLevel10     string      `json:"newLevel10"`
 			NewLevel12     interface{} `json:"newLevel12"`
 			NewLevel13     interface{} `json:"newLevel13"`
 			NewLevel14     interface{} `json:"newLevel14"`
@@ -663,25 +698,109 @@ type StreamData struct {
 			MediaContentID string      `json:"mediaContentId"`
 			MediaDiffMode  string      `json:"mediaDiffMode"`
 			MediaChannel   string      `json:"mediaChannel"`
-			NetMeasurement string      `json:"netMeasurement"`
+			NetMeasurement interface{} `json:"netMeasurement"`
 		} `json:"estat"`
 		Npaw struct {
+			Title            string      `json:"title"`
+			TitleEpisode     interface{} `json:"title_episode"`
+			Program          string      `json:"program"`
+			Season           int         `json:"season"`
+			ContentID        string      `json:"content_id"`
+			DrmType          interface{} `json:"drm_type"`
+			Channel          string      `json:"channel"`
+			ContentType      string      `json:"content_type"`
+			ContentGenre     string      `json:"content_genre"`
+			AppVersion       interface{} `json:"app_version"`
 			CustomDimension1 string      `json:"customDimension1"`
 			CustomDimension2 string      `json:"customDimension2"`
 			CustomDimension3 string      `json:"customDimension3"`
-			CustomDimension4 string      `json:"customDimension4"`
-			CustomDimension5 string      `json:"customDimension5"`
-			CustomDimension6 string      `json:"customDimension6"`
+			CustomDimension4 interface{} `json:"customDimension4"`
+			CustomDimension5 interface{} `json:"customDimension5"`
+			CustomDimension6 interface{} `json:"customDimension6"`
 			CustomDimension7 interface{} `json:"customDimension7"`
 			CustomDimension8 string      `json:"customDimension8"`
+			CustomDimension9 interface{} `json:"customDimension9"`
+			ContentSaga      interface{} `json:"content_saga"`
 		} `json:"npaw"`
+		Analytics struct {
+			IsTrackingEnabled bool   `json:"isTrackingEnabled"`
+			IDSite            int    `json:"idSite"`
+			Variant           string `json:"variant"`
+			GeneralPlacement  string `json:"generalPlacement"`
+			DetailedPlacement string `json:"detailedPlacement"`
+			URL               string `json:"url"`
+			Server            string `json:"server"`
+			DiffusionDate     string `json:"diffusionDate"`
+			ProgramName       string `json:"programName"`
+			VideoTitle        string `json:"videoTitle"`
+			VideoProductID    string `json:"videoProductId"`
+			VideoFactoryID    string `json:"videoFactoryId"`
+			Season            int    `json:"season"`
+			VideoType         string `json:"videoType"`
+			VideoCategory     string `json:"videoCategory"`
+			VideoSubCategory  string `json:"videoSubCategory"`
+		} `json:"analytics"`
 		Pub struct {
 			Csid            string        `json:"csid"`
 			Caid            string        `json:"caid"`
 			Afid            string        `json:"afid"`
 			Sfid            string        `json:"sfid"`
+			Capping         interface{}   `json:"capping"`
 			MidrollTimecode []interface{} `json:"midroll_timecode"`
 			IsPreview6H     bool          `json:"isPreview6h"`
+			IsPreview       bool          `json:"isPreview"`
+			MediaTailorURL  interface{}   `json:"mediaTailorUrl"`
+			PollingInterval int           `json:"pollingInterval"`
+			Profile         string        `json:"profile"`
+			Pauseroll       struct {
+				Enabled          bool `json:"enabled"`
+				Delay            int  `json:"delay"`
+				CappingPreroll   int  `json:"cappingPreroll"`
+				CappingPauseroll int  `json:"cappingPauseroll"`
+			} `json:"pauseroll"`
 		} `json:"pub"`
+		Piano struct {
+			IsTrackingEnabled    bool        `json:"isTrackingEnabled"`
+			SiteID               int         `json:"siteId"`
+			ContentStatus        string      `json:"contentStatus"`
+			Channel              string      `json:"channel"`
+			Region               string      `json:"region"`
+			Program              string      `json:"program"`
+			Server               string      `json:"server"`
+			ContentDiffusionDate string      `json:"contentDiffusionDate"`
+			ContentTitle         string      `json:"contentTitle"`
+			ContentType          string      `json:"contentType"`
+			ContentID            string      `json:"contentId"`
+			VideoFactoryID       string      `json:"videoFactoryId"`
+			Season               int         `json:"season"`
+			Category             string      `json:"category"`
+			SubCategory          string      `json:"subCategory"`
+			OriginServer         string      `json:"originServer"`
+			BroadcastingType     string      `json:"broadcastingType"`
+			DaiStatus            bool        `json:"daiStatus"`
+			Highlight            interface{} `json:"highlight"`
+		} `json:"piano"`
+		Maxwell struct {
+			Channel          string      `json:"channel"`
+			Region           string      `json:"region"`
+			ContentStatus    string      `json:"contentStatus"`
+			ContentType      string      `json:"contentType"`
+			Category         string      `json:"category"`
+			ContentID        string      `json:"contentId"`
+			BroadcastingType string      `json:"broadcastingType"`
+			OriginServer     string      `json:"originServer"`
+			DaiStatus        bool        `json:"daiStatus"`
+			Event            interface{} `json:"event"`
+		} `json:"maxwell"`
 	} `json:"markers"`
+	Quanteec struct {
+		Activated         bool        `json:"activated"`
+		VideoID           string      `json:"videoID"`
+		AnalyticsVideoID  string      `json:"analyticsVideoID"`
+		Collection        string      `json:"collection"`
+		P2PConfiguration  string      `json:"p2pConfiguration"`
+		CheckUrls         bool        `json:"checkUrls"`
+		IgnoreTokenInUrls interface{} `json:"ignoreTokenInUrls"`
+		QuanteecKey       string      `json:"quanteecKey"`
+	} `json:"quanteec"`
 }
