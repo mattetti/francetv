@@ -27,3 +27,7 @@ francetv
 To backup all the episodes of a given show:
 
 `francetv --url https://www.france.tv/france-4/c-est-toujours-pas-sorcier/toutes-les-videos/ --all`
+
+## Binaries
+
+Latest versions for Mac, Linux and Windows available there: https://github.com/mattetti/francetv/releases/tag/nightly
