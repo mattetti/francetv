@@ -44,6 +44,7 @@ func main() {
 		os.Exit(1)
 	}
 	if *debugFlag {
+		fmt.Println("Debug mode enabled")
 		m3u8.Debug = true
 		mpdgrabber.Debug = true
 	}
@@ -292,7 +293,7 @@ func downloadMPDFile(stream *StreamData, outPath, outFilename string) error {
 			return fmt.Errorf("stream for %s not available: %d %s", tokenURL, resp.StatusCode, resp.Status)
 		}
 
-		b, err := ioutil.ReadAll(resp.Body)
+		b, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return fmt.Errorf("failed to read the mpd token URL %s - %s", tokenURL, err)
 		}
